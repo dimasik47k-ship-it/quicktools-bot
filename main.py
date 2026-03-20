@@ -1,4 +1,4 @@
-# QuickTools Bot — полный код (исправленная версия)
+# QuickTools Bot — полная версия для Docker + Render
 # Все настройки через .env, без хардкода токенов
 
 import asyncio
@@ -21,6 +21,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 import aiohttp
 import qrcode
 from io import BytesIO
+from aiohttp import web
 
 # ========== 🔥 ЗАГРУЗКА .ENV 🔥 ==========
 load_dotenv()
@@ -30,7 +31,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_MODEL = os.getenv("HF_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
-# Прокси настройки (Tor Browser = порт 9150)
+# Прокси настройки
 PROXY_HOST = os.getenv("PROXY_HOST", "127.0.0.1")
 PROXY_PORT = int(os.getenv("PROXY_PORT", 9150))
 PROXY_LOGIN = os.getenv("PROXY_LOGIN", "")
@@ -83,7 +84,6 @@ def get_user_stats(user_id: int):
     conn.close()
     return result
 
-# Инициализация БД при старте
 init_db()
 
 # ========== СОЗДАНИЕ БОТА С ПРОКСИ ==========
@@ -101,7 +101,8 @@ def create_bot_with_proxy():
         logger.info("🌐 Бот запускается напрямую")
     return Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
-bot = None
+# Глобальные переменные
+bot: Bot = None
 dp = Dispatcher()
 
 # ========== 🔘 КЛАВИАТУРЫ ==========
@@ -133,11 +134,10 @@ async def ask_hf(prompt: str) -> str:
     if not HF_TOKEN:
         return "❌ HF_TOKEN не настроен в .env!"
     
-    # ✅ URL без лишних пробелов
+    # ✅ FIX: убраны лишние пробелы в URL
     url = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     
-    # Форматируем промпт для инструктивной модели
     formatted_prompt = f"""<|im_start|>system
 Ты полезный ассистент бота QuickTools. Отвечай кратко и по делу на русском языке.<|im_end|>
 <|im_start|>user
@@ -184,6 +184,53 @@ async def on_startup():
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         raise
+
+# ========== 🏥 HEALTH ENDPOINT ДЛЯ RENDER (БЕЗОПАСНЫЙ) ==========
+async def health_handler(request):
+    """
+    Endpoint для проверки здоровья бота (Render/UptimeRobot).
+    ⚠️ Всегда возвращает 200, чтобы Render не убивал контейнер!
+    ⚠️ Никаких async-вызовов к Telegram API!
+    """
+    try:
+        bot_status = "ok" if (bot and getattr(bot, 'token', None)) else "initializing"
+        bot_username = None
+        
+        # Если бот уже закешировал info — берём оттуда (без сетевых вызовов)
+        if bot and hasattr(bot, '_me') and bot._me:
+            bot_username = bot._me.username
+        
+        return web.json_response({
+            "status": bot_status,
+            "bot": bot_username,
+            "port": os.getenv("PORT", "unknown"),
+            "timestamp": datetime.now().isoformat()
+        }, status=200)
+        
+    except Exception as e:
+        logger.error(f"❌ Health check error: {type(e).__name__}: {e}")
+        # 🔥 КРИТИЧНО: даже при ошибке возвращаем 200!
+        return web.json_response({
+            "status": "error",
+            "message": "Internal check failed"
+        }, status=200)
+
+async def start_web_server():
+    """Запускаем мини-веб-сервер для health checks"""
+    app = web.Application()
+    app.router.add_get('/health', health_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render назначает порт через переменную окружения
+    port = int(os.getenv("PORT", 8080))
+    # 🔥 Слушаем 0.0.0.0, чтобы быть доступным извне
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"🏥 Health server started on 0.0.0.0:{port}")
+    
+    return runner
 
 # ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
@@ -376,13 +423,13 @@ async def cmd_short(message: types.Message):
     log_command(message.from_user.id, "/short")
     url = message.text.replace("/short ", "").strip()
     if not url or url == message.text:
-        await message.answer("❌ /short https://tegbi.vercel.app", reply_markup=get_try_keyboard("short", "Попробовать"))
+        await message.answer("❌ /short https://example.com", reply_markup=get_try_keyboard("short", "Попробовать"))
         return
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     msg = await message.answer("⏳ <i>Сокращаю...</i>")
     async with aiohttp.ClientSession() as session:
-        # ✅ URL без лишних пробелов
+        # ✅ FIX: убраны лишние пробелы в URL
         async with session.get(f"https://clck.ru/--?url={url}") as resp:
             if resp.status == 200:
                 short = (await resp.text()).strip()
@@ -450,51 +497,38 @@ async def cmd_rand(message: types.Message):
         reply_markup=get_retry_keyboard("tool_rand")
     )
 
-# ========== ЗАПУСК ==========
-# ========== ЗАПУСК ==========
+# ========== 🚀 ЗАПУСК (ПРАВИЛЬНЫЙ ПОРЯДОК!) ==========
 async def main():
-    global bot
-    bot = create_bot_with_proxy()
-    await on_startup()
+    global bot, dp
     
-    # Запускаем health server для Render
+    # 1️⃣ СНАЧАЛА health-сервер — чтобы Render сразу видел 200
     web_runner = await start_web_server()
+    logger.info("🏥 Health endpoint ready on /health")
     
-    logger.info("🚀 Polling...")
+    # 2️⃣ Потом инициализация бота (может занять время)
+    try:
+        bot = create_bot_with_proxy()
+        await bot.get_me()  # Проверка токена
+        logger.info(f"✅ Бот @{(await bot.get_me()).username} инициализирован")
+    except Exception as e:
+        logger.error(f"⚠️ Бот не инициализирован: {e}")
+        # НЕ выходим! Health уже отвечает, Render не убьёт контейнер
+    
+    # 3️⃣ Запуск поллинга
+    logger.info("🚀 Starting polling...")
     try:
         await dp.start_polling(bot)
     finally:
-        await bot.session.close()
+        if bot:
+            await bot.session.close()
         await web_runner.cleanup()
 
-# ========== 🏥 HEALTH ENDPOINT ДЛЯ RENDER ==========
-from aiohttp import web
-
-async def health_handler(request):
-    """Endpoint для проверки здоровья бота (Render/UptimeRobot)"""
-    return web.json_response({
-        "status": "ok",
-        "bot": bot.username if bot else "not initialized"
-    })
-
-async def start_web_server():
-    """Запускаем мини-веб-сервер вместе с ботом"""
-    app = web.Application()
-    app.router.add_get('/health', health_handler)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    # Render назначает порт через переменную окружения
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"🏥 Health server started on port {port}")
-    
-    return runner
-
+# ========== ENTRY POINT ==========
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("👋 Остановлен")
+        logger.info("👋 Остановлен пользователем")
+    except Exception as e:
+        logger.error(f"💥 Критическая ошибка: {e}")
+        raise

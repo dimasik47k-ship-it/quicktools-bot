@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# База данных (SQLite на Render эфемерный)
+*.db
+*.sqlite
+*.sqlite3
+
+# Окружение (НИКОГДА не коммить токены!)
+.env
+.env.local
+.env.*.local
+
+# Логи
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

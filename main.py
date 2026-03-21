@@ -127,31 +127,28 @@ def get_retry_keyboard(cb: str):
 def get_try_keyboard(command: str, text: str):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✨ {text}", callback_data=f"try_{command}")]])
 
-# ========== 🤖 HUGGING FACE AI ==========
 async def ask_hf(prompt: str) -> str:
-    """Запрос к Hugging Face Inference API"""
+    """Запрос к Hugging Face API — НОВЫЙ эндпоинт 2026"""
     
     if not HF_TOKEN:
         return "❌ HF_TOKEN не настроен в .env!"
     
-    # ✅ FIX: убраны лишние пробелы в URL
-    url = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    # ✅ НОВЫЙ URL (старый возвращает 410)
+    url = "https://router.huggingface.co/hf-inference/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
     
-    formatted_prompt = f"""<|im_start|>system
-Ты полезный ассистент бота QuickTools. Отвечай кратко и по делу на русском языке.<|im_end|>
-<|im_start|>user
-{prompt}<|im_end|>
-<|im_start|>assistant
-"""
-    
+    # ✅ OpenAI-совместимый формат запроса
     data = {
-        "inputs": formatted_prompt,
-        "parameters": {
-            "max_new_tokens": 500,
-            "temperature": 0.7,
-            "return_full_text": False
-        }
+        "model": HF_MODEL,  # например: "Qwen/Qwen2.5-0.5B-Instruct"
+        "messages": [
+            {"role": "system", "content": "Ты полезный ассистент бота QuickTools. Отвечай кратко и по-русски."},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 500,
+        "temperature": 0.7
     }
     
     try:
@@ -159,17 +156,19 @@ async def ask_hf(prompt: str) -> str:
             async with session.post(url, json=data, headers=headers, timeout=60) as resp:
                 if resp.status == 200:
                     result = await resp.json()
-                    if isinstance(result, list) and len(result) > 0:
-                        answer = result[0]["generated_text"].strip()
-                        answer = answer.replace("<|im_end|>", "").strip()
-                        return answer
-                    return "❌ Не удалось получить ответ"
-                elif resp.status == 503:
-                    return "⏳ Модель загружается... Попробуй через 30 секунд"
+                    answer = result["choices"][0]["message"]["content"].strip()
+                    return answer
+                elif resp.status == 401:
+                    return "❌ Неверный HF_TOKEN"
+                elif resp.status == 404:
+                    return f"❌ Модель не найдена: {HF_MODEL}"
+                elif resp.status == 429:
+                    return "⏳ Лимит запросов. Попробуй через минуту"
                 else:
-                    return f"❌ Ошибка HF API: {resp.status}"
+                    error_text = await resp.text()
+                    return f"❌ Ошибка HF API {resp.status}: {error_text[:100]}"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ Ошибка соединения: {e}"
 
 # ========== СТАРТ ==========
 async def on_startup():

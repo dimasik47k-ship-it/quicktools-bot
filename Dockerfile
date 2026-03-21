@@ -2,17 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Копируем зависимости и устанавливаем
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Копируем код
 COPY . .
 
-ENV PYTHONUNBUFFERED=1
-ENV PORT=8080
+# Порт для health checks
+EXPOSE 8080
 
-EXPOSE ${PORT}
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.getenv(\"PORT\", 8080)}/health')" || exit 1
-
+# Запуск
 CMD ["python", "main.py"]

@@ -6,20 +6,19 @@ __pycache__/
 .Python
 env/
 venv/
-ENV/
+.venv/
 
-# База данных (SQLite на Render эфемерный)
+# Environment
+*.env
+!.env.example
+
+# Database
 *.db
-*.sqlite
 *.sqlite3
 
-# Окружение (НИКОГДА не коммить токены!)
-.env
-.env.local
-.env.*.local
-
-# Логи
+# Logs
 *.log
+logs/
 
 # IDE
 .vscode/
@@ -30,3 +29,6 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Render
+web/
